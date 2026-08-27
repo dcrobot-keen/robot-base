@@ -1,12 +1,16 @@
-// Mock firmware — a TCP server standing in for real hardware until a board
-// is chosen (see plan.md Phase 1). Implements exactly the safety property
-// the whole architecture depends on: the 300ms heartbeat watchdog and the
-// resulting E-STOP live here, independent of whatever is (or isn't) on the
-// other end of the connection.
+// Mock firmware — a WebSocket server standing in for real hardware until a
+// board is chosen (see plan.md Phase 1/2). WebSocket, not raw TCP, because
+// a real browser tab can't open a raw TCP socket at all — this is what
+// lets an actual Chromium tab join the test, not just a Node.js client.
+//
+// Implements exactly the safety property the whole architecture depends
+// on: the 300ms heartbeat watchdog and the resulting E-STOP live here,
+// independent of whatever is (or isn't) on the other end of the
+// connection.
 //
 // Run: node src/index.js   (or `npm start`)
 
-import net from 'node:net';
+import { WebSocketServer } from 'ws';
 import { encodeFrame, FrameDecoder } from './frame.js';
 import { CMD } from './commands.js';
 
@@ -33,10 +37,10 @@ function forceEstop(reason) {
   log(`ESTOP — motors zeroed (${reason})`);
 }
 
-function handleFrame(socket, cmd, payload) {
+function handleFrame(ws, cmd, payload) {
   if (cmd === CMD.HEARTBEAT) {
     state.lastHeartbeatAt = Date.now();
-    if (!socket.destroyed) socket.write(encodeFrame(CMD.HEARTBEAT, payload)); // echo
+    if (ws.readyState === ws.OPEN) ws.send(encodeFrame(CMD.HEARTBEAT, payload)); // echo
   } else if (cmd === CMD.SET_VELOCITY) {
     if (state.estopped) {
       log('ignoring SET_VELOCITY — currently estopped');
@@ -51,17 +55,19 @@ function handleFrame(socket, cmd, payload) {
   }
 }
 
-const server = net.createServer((socket) => {
+const wss = new WebSocketServer({ port: PORT });
+
+wss.on('connection', (ws) => {
   log('connection opened — watchdog (re)armed');
   state.lastHeartbeatAt = Date.now();
   state.estopped = false;
 
   const decoder = new FrameDecoder();
-  socket.on('data', (data) => {
-    for (const { cmd, payload } of decoder.push(data)) handleFrame(socket, cmd, payload);
+  ws.on('message', (data) => {
+    for (const { cmd, payload } of decoder.push(new Uint8Array(data))) handleFrame(ws, cmd, payload);
   });
-  socket.on('close', () => log('connection closed — watchdog keeps running regardless'));
-  socket.on('error', () => {}); // a reset/destroyed socket is expected during the crash test
+  ws.on('close', () => log('connection closed — watchdog keeps running regardless'));
+  ws.on('error', () => {}); // an abrupt/reset connection is expected during the crash test
 });
 
 // Runs whether or not anything is connected — this is the load-bearing part.
@@ -71,4 +77,4 @@ setInterval(() => {
   }
 }, WATCHDOG_TICK_MS);
 
-server.listen(PORT, () => log(`listening on tcp://127.0.0.1:${PORT}`));
+log(`listening on ws://127.0.0.1:${PORT}`);

@@ -6,5 +6,8 @@
   "description": "Node.js stand-in for real firmware. Validates the wire protocol and the 300ms heartbeat watchdog / E-STOP timing over a plain TCP socket, before any hardware or WebSerial is involved. See ../../research.md and ../../plan.md.",
   "scripts": {
     "start": "node src/index.js"
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
   }
 }
