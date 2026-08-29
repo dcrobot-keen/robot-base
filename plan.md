@@ -131,10 +131,13 @@ Phase 1 검증은 전부 Node.js끼리의 통신이었고 실제 브라우저는
 `SIM_RWD_MS`ms — 기본 1000 — 동안 없으면 모터 0 + 래치). 워치독은 연결 여부와
 무관하게 돈다.
 
-`web/scripts/roboteq-smoke.mjs`가 브라우저 없이 전 구간을 검증한다(7/7 통과):
+`web/scripts/roboteq-smoke.mjs`가 브라우저 없이 전 구간을 검증한다(8/8 통과,
+WebSerialTransport 초기화 시퀀스 체크 추가 이후 수치 — `web/plan.md` 참고):
 `?FID` 응답, `!MG` 전엔 `!G` 무시, `!MG` 후 엔코더 증가, `+` ack, `!EX` 후
-`FF=16`/`DI=0` 래치, 침묵 시 RWD 정지. `prototype-client.mjs` 크래시 회귀도 통과 —
-`connection closed` 후 `SIM_RWD_MS` 근방에서 시뮬레이터가 독자 정지. 자세한 건
+`FF=16`/`DI=0` 래치, 침묵 시 RWD 정지(단순 로그 존재 확인이 아니라
+`RWD_MS`~`RWD_MS+150ms` 범위의 타이밍 회귀 어서션). `prototype-client.mjs` 크래시
+회귀도 통과 — `connection closed` 후 `SIM_RWD_MS` 근방에서 시뮬레이터가 독자 정지.
+두 스모크 테스트는 `web/`에서 `npm test`로 함께 실행된다. 자세한 건
 `web/source-explained.md`.
 
 ## 아직 정하지 않은 것
