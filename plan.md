@@ -119,8 +119,23 @@ Phase 1 검증은 전부 Node.js끼리의 통신이었고 실제 브라우저는
 `ESTOP` 어휘는 처음부터 placeholder였다. 실제 프로토콜은 Roboteq ASCII 시리얼
 명령(115200 8N1, `\r` 종결, `_` 다중명령 구분, `!G 1 n_!G 2 n` / `!MG` / `!EX` /
 `?C` / `?V` …)이고, 전체 명령 세트·초기화 시퀀스·리드백 파싱·변환식을
-`../former-motor-protocol.md`(루트 스크래치 레포)에 정리했다. `sim/`은 이 문서 기준
-**Roboteq 에뮬레이터**로, `web/packages/transport`는 Roboteq 코덱으로 다시 쓴다.
+`../former-motor-protocol.md`(루트 스크래치 레포)에 정리했다.
+
+### 코드 반영 완료
+
+`frame.js` + `commands.js`(바이너리 프레임)를 삭제하고 `sim/src/roboteq.js`(코덱:
+`encodeCommand` + `cmd` 빌더 + `RoboteqDecoder`)를 넣었다 — `web` 레포의 같은
+파일과 바이트 단위로 동일(의도된 복제). `sim/src/index.js`는 Roboteq 에뮬레이터로
+다시 썼다: `?FID` 핸드셰이크, `+`/`-` ack, `?A`/`?C`/`?V`/`?DI`/… 쿼리 응답,
+`!G`/`!MG`/`!EX`/`!C`/`!B`/… 처리, 가짜 엔코더 적분, 그리고 **RWD 워치독**(명령이
+`SIM_RWD_MS`ms — 기본 1000 — 동안 없으면 모터 0 + 래치). 워치독은 연결 여부와
+무관하게 돈다.
+
+`web/scripts/roboteq-smoke.mjs`가 브라우저 없이 전 구간을 검증한다(7/7 통과):
+`?FID` 응답, `!MG` 전엔 `!G` 무시, `!MG` 후 엔코더 증가, `+` ack, `!EX` 후
+`FF=16`/`DI=0` 래치, 침묵 시 RWD 정지. `prototype-client.mjs` 크래시 회귀도 통과 —
+`connection closed` 후 `SIM_RWD_MS` 근방에서 시뮬레이터가 독자 정지. 자세한 건
+`web/source-explained.md`.
 
 ## 아직 정하지 않은 것
 

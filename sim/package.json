@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "description": "Node.js stand-in for real firmware. Validates the wire protocol and the 300ms heartbeat watchdog / E-STOP timing over a plain TCP socket, before any hardware or WebSerial is involved. See ../../research.md and ../../plan.md.",
+  "description": "Node.js stand-in for the Former 2.0's Roboteq motor controller. Speaks the real Roboteq ASCII line protocol over a WebSocket and implements the serial watchdog (RWD) that stops the motors on serial silence. See ../../former-motor-protocol.md, ../../research.md, ../../plan.md.",
   "scripts": {
     "start": "node src/index.js"
   },

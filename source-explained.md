@@ -12,52 +12,28 @@
 
 ## sim/package.json
 
-`firmware-sim`이라는 이름의 Node.js 패키지 정의. 의존성이 하나도 없다 — `node:net`, `Uint8Array`, `DataView` 같은 Node.js 내장 기능만 쓰기 때문에 `npm install` 자체가 필요 없다. `"type": "module"`로 ESM을 쓰고, `npm start`가 `node src/index.js`를 실행하도록만 되어 있다.
+`ros-chromium-firmware-sim` Node.js 패키지 정의. 유일한 의존성은 `ws`(WebSocket 서버). `"type": "module"`, `npm start` → `node src/index.js`.
 
-## sim/src/commands.js
+## sim/src/roboteq.js
 
-프로토콜에서 쓰는 명령 바이트를 상수로 정의한 파일. 지금은 세 개만 실제로 쓰인다.
+Former 2.0 베이스의 실제 시리얼 프로토콜(Roboteq ASCII 라인 프로토콜) 코덱. `../../former-motor-protocol.md`가 이 프로토콜을 역추출·정리한 공통 문서이고, 이 파일은 그 구현이다. 처음 프로토타입이 쓰던 SOF/LEN/CMD/CRC16 바이너리 프레임(`frame.js` + `commands.js`)은 타겟 로봇이 정해지기 전까지의 placeholder였고, 이제 삭제됐다.
 
-- `HEARTBEAT = 0x01` — 하트비트, 양방향(브라우저→펌웨어로 보내면 펌웨어가 그대로 에코)
-- `SET_VELOCITY = 0x02` — 좌우 바퀴 목표 속도 설정
-- `ESTOP = 0x03` — 명시적 긴급 정지 명령
+- `encodeCommand(line)` — 명령 문자열(끝에 `\r` 없이)을 바이트로. 예: `encodeCommand('!G 1 500_!G 2 -500')`.
+- `cmd` — 명령/쿼리 문자열 빌더 모음(`motorGo`, `estop`, `keepAlive`, `motorCommand`, `queryRuntime` 등). 호출부가 프로토콜 문서처럼 읽히도록 얇은 템플릿만.
+- `RoboteqDecoder` — 스트리밍 라인 디코더. `push(bytes)`마다 `\r` 단위로 잘라 파싱한 메시지 배열을 낸다. 메시지는 `{type:'ack', ok}`(`+`/`-`), `{type:'reply', key, values, raw}`(`KEY=v:v` / `KEY:v:v`), `{type:'line', raw}`(그 외 — 시뮬레이터가 받는 *명령* 라인도 이 형태이고, `raw`를 `_`로 다시 쪼갠다).
 
-`GET_ENCODER`(0x04), `GET_IMU`(0x05), `GET_BATTERY`(0x06)는 번호만 예약해두고 아직 처리 로직이 없다. 텔레메트리가 필요해지는 다음 단계에서 채워질 자리다.
-
-이 파일은 `web` 레포의 `packages/transport/src/commands.js`와 내용이 완전히 동일해야 한다. 두 레포가 서로 파일시스템 경로로 참조하지 않기 때문에(각 레포가 독립적으로 서 있어야 한다는 원칙 때문에) 일부러 복제해뒀고, 프로토콜을 바꿀 때는 두 파일을 같이 고쳐야 한다. 이 동기화를 자동으로 강제하는 장치는 아직 없다 — 사람이 기억해서 맞춰야 하는 상태이고, 이건 알려진 기술 부채다.
-
-## sim/src/frame.js
-
-와이어 프로토콜의 인코더/디코더. 프레임 구조는 `SOF(1B) | LEN(1B) | CMD(1B) | PAYLOAD(0~32B) | CRC16(2B) | EOF(1B)`이다.
-
-`crc16()`은 CRC-16/CCITT-FALSE(다항식 0x1021, 초기값 0xFFFF)를 직접 구현한 것으로, CMD와 PAYLOAD를 합친 바이트열에 대해 계산한다. 표준 CRC 알고리즘이라 나중에 C++로 옮길 때도 똑같은 결과가 나오는 참조 구현으로 쓸 수 있다.
-
-`encodeFrame(cmd, payload)`은 명령 바이트와 페이로드를 받아 완성된 프레임 바이트열을 만들어낸다.
-
-`FrameDecoder` 클래스가 이 파일에서 가장 까다로운 부분이다. TCP나 시리얼은 바이트를 원하는 단위로 잘라서 주지 않고 아무렇게나 조각내서 주기 때문에, `push(bytes)`를 호출할 때마다 들어온 바이트를 내부 버퍼에 누적하고, 버퍼 안에서 완성된 프레임을 찾을 수 있는 만큼 찾아서 배열로 반환한다. 동작 방식은 이렇다.
-
-1. 버퍼에서 `SOF`를 찾는다. 없으면 버퍼를 통째로 비운다(쓰레기 데이터로 간주).
-2. `SOF` 앞에 남은 찌꺼기가 있으면 버린다.
-3. `LEN` 바이트까지 왔는지 확인하고, 프레임 전체 길이(`6 + LEN`)만큼 버퍼가 찼는지 확인한다. 아직 덜 왔으면 다음 `push` 호출을 기다린다.
-4. 프레임 전체를 버퍼에서 잘라낸 뒤, 마지막 바이트가 `EOF`인지, CRC가 맞는지 검사한다. 둘 중 하나라도 틀리면 그 프레임은 버리고 다음 `SOF`부터 다시 찾는다(재동기화).
-5. 통과한 프레임만 `{ cmd, payload }` 형태로 결과 배열에 담는다.
-
-이 재동기화 로직 덕분에 프레임 하나가 깨져도 그 다음 프레임부터는 정상적으로 다시 읽어낼 수 있다. 다만 지금까지의 검증에서는 일부러 데이터를 깨뜨려본 적이 없어서, 이 경로가 실제로 잘 동작하는지는 아직 테스트되지 않았다.
-
-이 파일도 `commands.js`와 마찬가지로 `web/packages/transport/src/frame.js`에 그대로 복제되어 있다.
+이 파일은 `web/packages/transport/src/roboteq.js`와 바이트 단위로 동일해야 한다. 두 레포가 파일시스템 경로로 서로를 참조하지 않는 원칙 때문에 일부러 복제했고, 프로토콜을 바꿀 때 두 파일을 사람이 맞춰야 한다(알려진 기술 부채). `former-motor-protocol.md`가 그 공통 소스 역할을 한다.
 
 ## sim/src/index.js
 
-진짜 펌웨어가 생기기 전까지 그 역할을 대신하는 서버. 처음에는 raw TCP(`net.createServer`)로 만들었지만, 지금은 `ws` 패키지로 WebSocket 서버로 바꿨다 — 이유는 단순한데, 브라우저는 raw TCP 소켓을 아예 열 수 없어서 실제 크로미움 탭을 검증 흐름에 넣으려면 WebSocket이 필수였다. `ws`는 이 레포에서 처음이자 유일하게 추가한 외부 의존성이다(`sim/package.json` 참고). 이 파일이 이번 프로토타입 검증의 핵심이다.
+Former 2.0의 Roboteq 모터 컨트롤러를 흉내내는 WebSocket 서버. 실제 컨트롤러는 RS232 시리얼이지만, 브라우저가 raw 시리얼 포트를 못 여니 검증 흐름에 실제 크로미움 탭을 넣기 위해 WebSocket으로 감쌌다 — 그 위에 얹힌 프로토콜은 진짜 Roboteq ASCII 명령 그대로다.
 
-상태(`state`)는 연결 단위가 아니라 프로세스 전역으로 하나만 존재한다 — `leftMps`, `rightMps`, `estopped`, `lastHeartbeatAt`. 이게 중요한 설계 결정인데, 실제 하드웨어도 마이크로컨트롤러 하나에 모터가 붙어있지 연결마다 별도의 모터 세트가 있는 게 아니기 때문에, 시뮬레이터도 연결과 무관한 전역 물리 상태 하나만 갖도록 맞췄다.
+상태(`state`)는 연결 단위가 아니라 프로세스 전역이다 — `cmd[2]`(채널별 마지막 `!G` 명령값), `enc[2]`(엔코더 카운트), `motorEnabled`(`!MG`/`!EX`), `estopped`(`!EX` 또는 RWD 워치독이 래치), 가짜 전압/온도, `lastCmdAt`. 실제 하드웨어도 컨트롤러 하나에 물리 상태 하나뿐이라 시뮬레이터도 그렇게 맞췄다.
 
-`setInterval`로 50ms마다 도는 워치독 체크가 파일 맨 아래에 있는데, 이 체크는 **연결 여부와 완전히 무관하게** 항상 돈다. `Date.now() - state.lastHeartbeatAt > 300`이면 무조건 `forceEstop()`을 호출한다. 서버가 막 시작해서 아직 아무도 연결하지 않은 상태에서도 이 타이머는 돌고 있고, 300ms가 지나면 첫 ESTOP이 찍힌다 — 이건 버그가 아니라 "콜드 부팅 시 기본값은 안전 상태여야 한다"는 의도된 동작이다.
+`handleSub(ws, sub)`가 `_`로 쪼갠 서브명령 하나를 처리한다. **어떤 명령이든** 받으면 `lastCmdAt`을 갱신한다 — 이게 RWD 워치독을 먹이는 방식이고, 실제 Roboteq RWD도 "시리얼에 무슨 트래픽이든 오면 리셋"이다. 쿼리(`?FID`/`?A`/`?AI`/`?C`/`?FF`/`?T`/`?V`/`?DI`)는 `KEY=...` 라인으로 응답, 액션(`^ECHOF`/`!R`/`!B`/`!AC`/`!DC`/`!C`/`!MG`/`!EX`/`!G`)은 `+`로 ack(모르는 건 `-`). `!G`는 `motorEnabled && !estopped`일 때만 `cmd[]`에 반영하고, 아니면 로그만 남기고 무시한다(그래도 `+`는 보냄).
 
-`wss.on('connection', ...)` 콜백 안에서는 연결이 열릴 때마다 `lastHeartbeatAt`을 현재 시각으로, `estopped`를 `false`로 재설정한다 — 새 연결이 붙으면 워치독이 재무장되는 구조다. `ws.on('close', ...)` 핸들러는 로그만 남기고 아무것도 하지 않는데, 이게 핵심이다: 연결이 끊겨도 워치독 인터벌은 별도로 계속 돌고 있으므로, 아무도 듣고 있지 않은 상태에서도 300ms 뒤에는 ESTOP이 알아서 발동한다. WebSocket으로 바꾼 뒤에도 이 성질은 그대로다 — TCP를 감싸고 있을 뿐 연결이 끊기는 방식(정상 종료든 크래시든) 자체는 그 아래 계층 얘기라 워치독 로직과는 무관하다.
+파일 맨 아래 `setInterval`(20ms)이 두 가지를 한다. (1) `cmd[]`에 비례해 `enc[]`를 적분해서 가짜 바퀴 회전을 만든다(±1000 단위 = ±200 RPM, 16384 counts/rev). (2) **RWD 워치독** — `Date.now() - state.lastCmdAt > RWD_MS`면 `stopMotors()`를 호출한다. 이 타이머는 **연결 여부와 완전히 무관하게** 돈다. 서버가 막 떠서 아무도 안 붙은 상태에서도 `RWD_MS` 뒤 첫 정지가 찍히고(콜드 부팅 기본값 = 안전), 연결이 끊긴 뒤에도(정상 종료든 크래시든 — 그건 아래 계층 얘기라 워치독과 무관) `RWD_MS` 뒤 스스로 정지한다. 이게 이 프로젝트 안전 모델의 "펌웨어가 워치독을 소유한다"에 해당하는 실제 메커니즘이다.
 
-`handleFrame()`은 세 가지 명령만 처리한다. `HEARTBEAT`는 시각 갱신 후 그대로 에코, `SET_VELOCITY`는 `estopped` 상태가 아닐 때만 `DataView`로 float32 두 개를 읽어 반영(estop 중이면 무시하고 로그만 남김), `ESTOP`은 무조건 `forceEstop()`을 호출한다.
+`wss.on('connection')`에서 연결이 열릴 때마다 `lastCmdAt` 리셋, `estopped=false`, `motorEnabled=false`, `cmd` 0으로 — 새 연결이 워치독을 재무장하고 모터는 다시 비활성 상태로 시작한다(실제 `on_activate`가 `!MG`를 보내야 하는 것과 같음). `stopMotors(reason)`은 이미 `estopped`면 중복 로그를 막고, 아니면 `cmd` 0, `motorEnabled=false`, `estopped=true`로 래치하고 이유와 함께 로그. 호출 경로는 `!EX`와 RWD 타임아웃 둘.
 
-`forceEstop(reason)`은 이미 `estopped`이면 아무것도 안 하고(중복 로그 방지), 아니면 속도를 0으로 되돌리고 이유와 함께 로그를 남긴다. 이 함수가 호출되는 경로는 지금 두 가지다 — 명시적 `ESTOP` 명령, 그리고 워치독 타임아웃.
-
-`SIM_PORT` 환경변수로 포트를 바꿀 수 있고, 기본값은 8765다.
+`SIM_PORT`(기본 8765), `SIM_RWD_MS`(기본 1000 — Roboteq RWD 기본값; 빠른 테스트는 `SIM_RWD_MS=300`처럼).
