@@ -68,6 +68,65 @@ Windows에서 실행했을 때 시뮬레이터 로그는 다음과 같은 순서
 
 Phase 1 검증은 전부 Node.js끼리의 통신이었고 실제 브라우저는 등장하지 않았다. 이 레포 쪽에서는 그에 맞춰 `sim/src/index.js`를 raw TCP(`net.createServer`)에서 WebSocket(`ws` 패키지)으로 바꿨다 — 브라우저가 raw TCP 소켓을 열 수 없기 때문에 실제 크로미움 탭을 검증 흐름에 넣으려면 필수적인 변경이었다. `ws`는 이 레포에 처음 추가한 외부 의존성이다. 워치독/ESTOP 로직 자체는 전혀 바뀌지 않았고 그 위에 얹힌 전송 방식만 바뀌었다. `web` 레포 쪽에서 무엇이 함께 바뀌었는지(`WebSocketTransport`, 실제 브라우저 테스트 페이지)는 그 레포의 `plan.md`에 자세히 남겨뒀다.
 
+## 타겟 하드웨어 확정 — ROAS Former 2.0
+
+지금까지 "디퍼렌셜 드라이브 로버 하나"로만 가정하던 레퍼런스 하드웨어가
+**ROAS Former 2.0**(https://roas.co.kr/former/)으로 정해졌다. 회사가 실제로
+보유한 유닛이고, 기본 OS가 Ubuntu인데 이 유닛에는 Debian이 깔려 있다.
+
+주요 스펙:
+
+- **온보드 컴퓨터**: Intel Core i5-8265U, 8GB RAM, x86-64 — 완전한 PC다.
+  마이크로컨트롤러가 아니다. 이게 이 문서의 전제를 하나 뒤집는다(아래).
+- **베이스 연결**: RS232 @ 115200 baud (기본형). 업그레이드형은 Ethernet + USB 추가.
+- **구동**: 디퍼렌셜 2륜, 320W, 최대 1.5 m/s, 적재 40kg. 배터리 LiFePO4 25.6V 30Ah(~4h).
+- **센서**: SICK TiM571-2050101 2D LIDAR, Intel RealSense D435, IMU, 초음파 ×2.
+- **레퍼런스 드라이버(오픈소스)**: `github.com/roasinc/former_robot` — ROS2, C++,
+  Apache-2.0. 저수준 베이스 드라이버는 `former_hardware_interface`(ros2_control) +
+  `former_interfaces` + `former_gpio_board`에 있다. RS232 실제 프레이밍/커맨드셋/
+  타임아웃 동작을 여기서 읽어내야 한다.
+
+### 이 문서의 전제가 바뀌는 지점
+
+이 프로젝트의 안전 모델은 "우리가 FreeRTOS로 짠 펌웨어가 워치독과 E-STOP을
+무조건적으로 소유한다"였다. Former에는 우리가 플래시할 MCU가 없다. RS232 너머에
+있는 건 ROAS의 모터 컨트롤러이고, 그게 하는 일을 우리는 **그대로 물려받을 뿐**
+바꿀 수 없다. 그래서 여기 있던 "펌웨어" 개념은 두 조각으로 갈린다.
+
+- **하드 리얼타임 부분** = Former 베이스의 모터 컨트롤러(RS232 상대편). 우리 손이
+  안 닿는다.
+- **그 위 전부** = Former의 i5 리눅스 PC. 여기서 Chromium이 WebSerial로 RS232
+  포트를 직접 연다. `firmware/sim`은 이제 "우리가 만들 펌웨어의 시뮬레이터"가 아니라
+  "**Former 베이스 컨트롤러의 시뮬레이터**"로 역할이 바뀐다 — 실제 RS232 프로토콜과
+  그 타임아웃 동작을 흉내내야 한다.
+
+### 안전 모델: 워치독은 이미 존재한다 (역추출로 확인됨)
+
+`former_hardware_interface` 소스를 읽어 확인했다. Former 구동부는 **Roboteq 모터
+컨트롤러**이고, 브라우저와 무관하게 도는 정지 계층이 이미 있다:
+
+- **Roboteq 내장 시리얼 워치독** (`RWD`, 기본 1000ms) — 시리얼로 명령이 1000ms 동안
+  안 오면 컨트롤러가 스스로 모터를 세운다. 이게 곧 이 프로젝트가 기대는 "펌웨어
+  워치독"이고, 우리가 만들 게 아니라 이미 하드웨어에 있다.
+- **온보드 MicroBasic 스크립트** (`!R 2`로 기동, `!B 3 1` keepalive로 유지) — ROAS의
+  2차 안전 로직. 본체는 컨트롤러에 있어 이 레포엔 없음.
+
+⚠️ 실기에서 `~RWD`를 조회해 0(비활성)이 아닌지 반드시 확인한다. E-STOP은 `!EX`.
+
+### 커맨드 어휘 / 와이어 프로토콜 — 추출 완료
+
+지금 `sim/`이 쓰는 SOF/LEN/CMD/PAYLOAD/CRC16/EOF와 `SET_VELOCITY`/`HEARTBEAT`/
+`ESTOP` 어휘는 처음부터 placeholder였다. 실제 프로토콜은 Roboteq ASCII 시리얼
+명령(115200 8N1, `\r` 종결, `_` 다중명령 구분, `!G 1 n_!G 2 n` / `!MG` / `!EX` /
+`?C` / `?V` …)이고, 전체 명령 세트·초기화 시퀀스·리드백 파싱·변환식을
+`../former-motor-protocol.md`(루트 스크래치 레포)에 정리했다. `sim/`은 이 문서 기준
+**Roboteq 에뮬레이터**로, `web/packages/transport`는 Roboteq 코덱으로 다시 쓴다.
+
 ## 아직 정하지 않은 것
 
-레퍼런스 하드웨어(현재는 디퍼렌셜 드라이브 로버 하나로 가정)와 정확한 커맨드 어휘는 실제 타겟 로봇이 정해지는 대로 다시 확정해야 한다. 매니페스트 스키마의 버전 관리 방식과, rtc 계층에서 WebRTC가 NAT 통과에 실패했을 때의 폴백(로컬 네트워크 안에서는 signaling-server를 거치는 일반 WebSocket 릴레이로 대체하는 방안을 고려 중)도 아직 세부 설계가 남아 있다.
+정확한 RS232 커맨드 어휘와 베이스 타임아웃 동작은 `former_hardware_interface`
+소스를 읽어 확정한다(위 절). 매니페스트 스키마의 버전 관리 방식과, rtc 계층에서
+WebRTC가 NAT 통과에 실패했을 때의 폴백(로컬 네트워크 안에서는 signaling-server를
+거치는 일반 WebSocket 릴레이로 대체하는 방안을 고려 중)도 아직 세부 설계가 남아 있다.
+SICK TiM571 LIDAR와 RealSense D435는 브라우저로 직접 붙이기 훨씬 어려워서(각각
+Ethernet/CoLa, USB/UVC) 당분간 범위 밖이고, 디퍼렌셜 베이스가 첫 교체 대상이다.
